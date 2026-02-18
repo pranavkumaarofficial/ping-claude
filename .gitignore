@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Debug artifacts
+*.log
+laptop/hooks/test_hook.bat
+laptop/hooks/bat_debug.log
+laptop/hooks/hook_debug.log
+
+# Research artifacts (not part of the tool)
+ntfy_search.json
+research.py
+
+# Android (for later)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# Model files (too large for git)
+*.gguf
+*.bin
+
+# Claude Code local settings
+.claude/settings.local.json
