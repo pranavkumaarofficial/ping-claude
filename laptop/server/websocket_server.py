@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Ping Claude — WebSocket Server
+Ping Claude — WebSocket Server (Bidirectional)
 Sits between the Claude Code hook and connected Android phones.
 
 Architecture:
-  TCP  :8766  ← companion_hook.py posts classified events here
+  TCP  :8766  ← companion_hook.py sends events AND polls for phone commands
   WS   :8765  → Android phones connect here (Tailscale / localhost)
 
 The server:
-  1. Ingests hook events, updates internal Claude state.
-  2. Broadcasts events to every connected phone.
-  3. Accepts commands FROM phones (approve / deny / text / status query).
+  1. Ingests hook events, updates internal Claude state, broadcasts to phones.
+  2. Accepts commands FROM phones (approve / deny / text / status query).
+  3. Serves pending phone commands BACK to the hook script (bidirectional TCP).
   4. Validates that WS connections come from Tailscale or localhost.
+
+Hook protocol (TCP):
+  Hook sends JSON → server responds with JSON.
+  Request may include "event_type" (new event) and/or "request":"poll_command".
+  Response always includes "status":"ok" and optionally "command":{...}.
 
 Dependencies: websockets  (pip install websockets)
 """
@@ -93,6 +98,19 @@ def all_sessions_summary() -> dict:
         "idle": sum(1 for s in sessions.values() if s.status == "idle"),
     }
 
+
+def consume_pending_command(source_filter: list[str]) -> dict | None:
+    """Pop and return the first pending command matching the source filter.
+    Empty filter matches any command."""
+    if not source_filter:
+        if pending_commands:
+            return pending_commands.pop(0)
+        return None
+    for i, cmd in enumerate(pending_commands):
+        if cmd["source"] in source_filter:
+            return pending_commands.pop(i)
+    return None
+
 # ---------------------------------------------------------------------------
 # IP validation
 # ---------------------------------------------------------------------------
@@ -139,43 +157,57 @@ async def broadcast(event: dict) -> None:
 
 async def handle_hook(reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter) -> None:
-    """Receive a single JSON blob from the hook script, update state, broadcast."""
+    """Bidirectional hook handler: receive event, optionally serve pending commands."""
     try:
         data = await asyncio.wait_for(reader.read(1 << 16), timeout=5.0)
         if not data:
             return
 
-        event = json.loads(data.decode("utf-8"))
-        etype = event.get("event_type", "unknown")
-        sid   = event.get("session_id", "")
-        cwd   = event.get("cwd", "")
+        msg = json.loads(data.decode("utf-8"))
+        request_type = msg.get("request", "notify")
+        response: dict = {"status": "ok"}
 
-        # derive a short project name from cwd for display
-        project = Path(cwd).name if cwd else "unknown"
-        log.info(f"HOOK  {etype}  session={sid[:12]}  project={project}")
+        # --- process event if present ---
+        etype = msg.get("event_type")
+        if etype:
+            sid   = msg.get("session_id", "")
+            cwd   = msg.get("cwd", "")
+            project = Path(cwd).name if cwd else "unknown"
+            log.info(f"HOOK  {etype}  session={sid[:12]}  project={project}")
 
-        # update per-session state
-        session = get_or_create_session(sid)
-        session.last_event_type = etype
-        session.last_message    = event.get("last_message", "")
-        session.cwd             = cwd
-        session.last_event_time = event.get("timestamp", "")
+            session = get_or_create_session(sid)
+            session.last_event_type = etype
+            session.last_message    = msg.get("last_message", "")
+            session.cwd             = cwd
+            session.last_event_time = msg.get("timestamp", "")
 
-        if etype == "task_completed":
-            session.status = "idle"
-        elif etype == "input_needed":
-            session.status = "waiting_for_input"
+            if etype == "task_completed":
+                session.status = "idle"
+            elif etype in ("input_needed", "permission_request"):
+                session.status = "waiting_for_input"
 
-        # inject session summary into the event so phone knows the full picture
-        event["project"] = project
-        event["active_sessions"] = all_sessions_summary()
+            # build broadcast event (shallow copy so we don't mutate msg)
+            event = dict(msg)
+            event["project"] = project
+            event["active_sessions"] = all_sessions_summary()
 
-        # push to history ring-buffer
-        event_history.append(event)
-        if len(event_history) > MAX_EVENT_HISTORY:
-            event_history.pop(0)
+            event_history.append(event)
+            if len(event_history) > MAX_EVENT_HISTORY:
+                event_history.pop(0)
 
-        await broadcast(event)
+            await broadcast(event)
+
+        # --- serve pending command if requested ---
+        if request_type == "poll_command":
+            cmd_filter = msg.get("command_filter", [])
+            cmd = consume_pending_command(cmd_filter)
+            response["command"] = cmd
+            if cmd:
+                log.info(f"  → delivered command to hook: {cmd['source']} = {cmd['text'][:40]}")
+
+        # --- send response ---
+        writer.write(json.dumps(response).encode("utf-8"))
+        await writer.drain()
 
     except asyncio.TimeoutError:
         log.warning("hook connection timed out")
