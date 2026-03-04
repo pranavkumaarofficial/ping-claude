@@ -10,7 +10,7 @@ Commands:
   ping-claude uninstall  — remove hooks from settings.json
 """
 from __future__ import annotations
-
+#
 import json
 import os
 import socket
