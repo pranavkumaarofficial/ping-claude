@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """
-Ping Claude — Hook Script (Bidirectional)
+Ping Claude -- Hook Script (Bidirectional)
 
 Handles Stop, PermissionRequest, and Notification hooks from Claude Code.
-
-- Stop: Notifies phone, polls briefly for follow-up text commands from phone.
-        If a command arrives, blocks the stop and injects it as context.
-- PermissionRequest: Notifies phone, polls for approve/deny from phone.
-        Outputs decision JSON so Claude Code auto-approves/denies.
-- Notification: Fire and forget — just notifies the phone.
-
-Dependencies: NONE (stdlib only — this script must never require pip).
+Dependencies: NONE (stdlib only).
 """
 from __future__ import annotations
 
@@ -23,24 +16,18 @@ from datetime import datetime, timezone
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8766
-SEND_TIMEOUT = 3            # per-operation TCP timeout (seconds)
-TRANSCRIPT_TAIL = 200_000   # read last 200 KB of transcript
+SEND_TIMEOUT = 3
+TRANSCRIPT_TAIL = 200_000
 
-STOP_POLL_SECONDS = 10      # how long Stop hook waits for phone commands
-STOP_POLL_INTERVAL = 2      # seconds between polls
-PERM_POLL_SECONDS = 110     # how long PermissionRequest waits for phone decision
-PERM_POLL_INTERVAL = 2      # seconds between polls
+STOP_POLL_SECONDS = 10
+STOP_POLL_INTERVAL = 2
+PERM_POLL_SECONDS = 110
+PERM_POLL_INTERVAL = 2
 
-# debug log — remove once everything is stable
 DEBUG_LOG = os.path.join(os.path.dirname(__file__), "hook_debug.log")
 
 
-# ---------------------------------------------------------------------------
-# debug
-# ---------------------------------------------------------------------------
-
 def _debug(msg: str) -> None:
-    """Append a line to the debug log (best-effort)."""
     try:
         with open(DEBUG_LOG, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()}  {msg}\n")
@@ -48,12 +35,7 @@ def _debug(msg: str) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# stdin
-# ---------------------------------------------------------------------------
-
 def read_hook_input() -> dict | None:
-    """Read the hook event JSON that Claude Code pipes to stdin."""
     try:
         raw = sys.stdin.read()
         if not raw:
@@ -63,12 +45,7 @@ def read_hook_input() -> dict | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# transcript reading
-# ---------------------------------------------------------------------------
-
 def _extract_text(content) -> str:
-    """Pull human-readable text out of an assistant message's content field."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -83,10 +60,6 @@ def _extract_text(content) -> str:
 
 
 def read_last_assistant_message(transcript_path: str) -> str:
-    """
-    Read the transcript JSONL and return the text of the last assistant
-    message.  Only reads the tail of the file to stay fast on large sessions.
-    """
     if not transcript_path or not os.path.isfile(transcript_path):
         return ""
     try:
@@ -94,13 +67,11 @@ def read_last_assistant_message(transcript_path: str) -> str:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as fh:
             if size > TRANSCRIPT_TAIL:
                 fh.seek(size - TRANSCRIPT_TAIL)
-                fh.readline()          # discard partial first line
+                fh.readline()
             lines = fh.readlines()
     except OSError:
         return ""
 
-    # walk backward — first assistant message we hit is the latest
-    # transcript envelope: {"type": "assistant", "message": {"role": "assistant", "content": [...]}}
     for line in reversed(lines):
         line = line.strip()
         if not line:
@@ -120,10 +91,6 @@ def read_last_assistant_message(transcript_path: str) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# payload
-# ---------------------------------------------------------------------------
-
 def build_payload(hook: dict, event_type: str, last_msg: str) -> dict:
     return {
         "event_type": event_type,
@@ -137,19 +104,13 @@ def build_payload(hook: dict, event_type: str, last_msg: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# TCP comms (bidirectional)
-# ---------------------------------------------------------------------------
-
 def send_recv(payload: dict) -> dict | None:
-    """Send JSON to server, receive JSON response. Returns None on failure."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(SEND_TIMEOUT)
     try:
         sock.connect((SERVER_HOST, SERVER_PORT))
         sock.sendall(json.dumps(payload).encode("utf-8"))
-        sock.shutdown(socket.SHUT_WR)   # signal done sending, keep read open
-        # read server response
+        sock.shutdown(socket.SHUT_WR)
         chunks: list[bytes] = []
         while True:
             chunk = sock.recv(4096)
@@ -160,14 +121,13 @@ def send_recv(payload: dict) -> dict | None:
             return json.loads(b"".join(chunks).decode("utf-8"))
     except (ConnectionRefusedError, ConnectionResetError,
             socket.timeout, OSError, json.JSONDecodeError):
-        pass                            # server down — never break Claude Code
+        pass
     finally:
         sock.close()
     return None
 
 
 def poll_command(session_id: str, command_filter: list[str]) -> dict | None:
-    """Poll the server for a pending command matching the filter."""
     resp = send_recv({
         "request": "poll_command",
         "session_id": session_id,
@@ -178,18 +138,7 @@ def poll_command(session_id: str, command_filter: list[str]) -> dict | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Stop handler
-# ---------------------------------------------------------------------------
-
 def handle_stop(hook: dict) -> None:
-    """
-    Stop hook: notify phone that Claude finished, then briefly poll for
-    a follow-up text command.  If one arrives, block the stop so Claude
-    processes it.
-    """
-    # If this stop was triggered by us blocking a previous stop,
-    # only do an immediate check (no polling delay).
     is_reentry = hook.get("stop_hook_active", False)
 
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
@@ -203,12 +152,10 @@ def handle_stop(hook: dict) -> None:
         _block_stop(cmd)
         return
 
-    # On re-entry, don't poll — let Claude stop immediately
     if is_reentry:
-        _debug("stop re-entry — no queued command, letting Claude stop")
+        _debug("stop re-entry -- no queued command, letting Claude stop")
         return
 
-    # Poll for a short window
     sid = hook.get("session_id", "")
     iterations = STOP_POLL_SECONDS // STOP_POLL_INTERVAL
     for _ in range(iterations):
@@ -218,13 +165,12 @@ def handle_stop(hook: dict) -> None:
             _block_stop(cmd)
             return
 
-    _debug("stop poll timed out — no phone command")
+    _debug("stop poll timed out -- no phone command")
 
 
 def _block_stop(cmd: dict) -> None:
-    """Output JSON that blocks Claude from stopping, injecting the phone command."""
     text = cmd.get("text", "")
-    _debug(f"BLOCKING STOP — phone command: {text[:80]}")
+    _debug(f"BLOCKING STOP -- phone command: {text[:80]}")
     result = {
         "decision": "block",
         "reason": f"User replied from phone: {text}",
@@ -232,19 +178,10 @@ def _block_stop(cmd: dict) -> None:
     print(json.dumps(result))
 
 
-# ---------------------------------------------------------------------------
-# PermissionRequest handler
-# ---------------------------------------------------------------------------
-
 def handle_permission_request(hook: dict) -> None:
-    """
-    PermissionRequest hook: notify phone about the tool permission prompt,
-    then poll for approve/deny.  Output decision JSON for Claude Code.
-    """
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
 
     payload = build_payload(hook, "permission_request", last_msg)
-    # include tool info so the phone can show what's being requested
     payload["tool_name"] = hook.get("tool_name", "")
     payload["tool_input"] = _truncate(hook.get("tool_input", {}), 500)
     payload["request"] = "poll_command"
@@ -256,7 +193,6 @@ def handle_permission_request(hook: dict) -> None:
         _output_permission_decision(cmd)
         return
 
-    # Poll until phone responds or timeout
     sid = hook.get("session_id", "")
     iterations = PERM_POLL_SECONDS // PERM_POLL_INTERVAL
     for _ in range(iterations):
@@ -266,11 +202,10 @@ def handle_permission_request(hook: dict) -> None:
             _output_permission_decision(cmd)
             return
 
-    _debug("permission poll timed out — no phone response")
+    _debug("permission poll timed out -- no phone response")
 
 
 def _output_permission_decision(cmd: dict) -> None:
-    """Output permission decision JSON for Claude Code to consume."""
     source = cmd.get("source", "")
     behavior = "allow" if source == "phone_approve" else "deny"
     _debug(f"permission decision: {behavior}")
@@ -286,7 +221,6 @@ def _output_permission_decision(cmd: dict) -> None:
 
 
 def _truncate(obj, max_len: int) -> str:
-    """JSON-serialize and truncate for phone display."""
     if isinstance(obj, dict):
         s = json.dumps(obj)
     else:
@@ -294,22 +228,13 @@ def _truncate(obj, max_len: int) -> str:
     return s[:max_len]
 
 
-# ---------------------------------------------------------------------------
-# Notification handler
-# ---------------------------------------------------------------------------
-
 def handle_notification(hook: dict) -> None:
-    """Notification hook: fire and forget — just tell the phone."""
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
     payload = build_payload(hook, "input_needed", last_msg)
     payload["request"] = "notify"
     send_recv(payload)
     _debug("notification sent")
 
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     _debug("HOOK INVOKED")
@@ -333,7 +258,7 @@ def main() -> None:
         if ntype in ("idle_prompt", "elicitation_dialog"):
             handle_notification(hook)
         else:
-            _debug(f"notification type '{ntype}' — ignoring")
+            _debug(f"notification type '{ntype}' -- ignoring")
 
     else:
         _debug(f"unknown hook event: {name}")

@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 """
-Ping Claude — WebSocket Server (Bidirectional)
-Sits between the Claude Code hook and connected Android phones.
+Ping Claude -- WebSocket Server (Bidirectional)
 
-Architecture:
-  TCP  :8766  ← companion_hook.py sends events AND polls for phone commands
-  WS   :8765  → Android phones connect here (Tailscale / localhost)
-
-The server:
-  1. Ingests hook events, updates internal Claude state, broadcasts to phones.
-  2. Accepts commands FROM phones (approve / deny / text / status query).
-  3. Serves pending phone commands BACK to the hook script (bidirectional TCP).
-  4. Validates that WS connections come from Tailscale or localhost.
+TCP  :8766  <- companion_hook.py sends events AND polls for phone commands
+WS   :8765  -> Android phones connect here (Tailscale / localhost)
 
 Hook protocol (TCP):
-  Hook sends JSON → server responds with JSON.
+  Hook sends JSON -> server responds with JSON.
   Request may include "event_type" (new event) and/or "request":"poll_command".
   Response always includes "status":"ok" and optionally "command":{...}.
-
-Dependencies: websockets  (pip install websockets)
 """
 from __future__ import annotations
 
@@ -37,18 +27,10 @@ except ImportError:
     print("ERROR: 'websockets' package not found.  Run:  pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-# ---------------------------------------------------------------------------
-# config
-# ---------------------------------------------------------------------------
-
 HOOK_PORT = 8766
 WS_PORT   = 8765
 ALLOWED_IP_PREFIXES = ("100.", "127.", "::1", "fd7a:", "10.", "192.168.")
-MAX_EVENT_HISTORY = 50      # ring-buffer of recent events for late-joining phones
-
-# ---------------------------------------------------------------------------
-# logging
-# ---------------------------------------------------------------------------
+MAX_EVENT_HISTORY = 50
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,14 +39,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("pingclaude")
 
-# ---------------------------------------------------------------------------
-# state
-# ---------------------------------------------------------------------------
 
 @dataclass
 class SessionState:
     session_id: str
-    status: str = "working"               # working | idle | waiting_for_input
+    status: str = "working"
     last_event_type: str = ""
     last_message: str = ""
     cwd: str = ""
@@ -74,11 +53,10 @@ class SessionState:
         return asdict(self)
 
 
-# keyed by session_id — each Claude Code terminal gets its own entry
 sessions: dict[str, SessionState] = {}
-event_history: list[dict] = []           # ring-buffer (all sessions combined)
+event_history: list[dict] = []
 connected_phones: set[ServerConnection] = set()
-pending_commands: list[dict] = []        # commands from phone, waiting to be consumed
+pending_commands: list[dict] = []
 
 
 def get_or_create_session(session_id: str) -> SessionState:
@@ -89,7 +67,6 @@ def get_or_create_session(session_id: str) -> SessionState:
 
 
 def all_sessions_summary() -> dict:
-    """Summary for phone UI: how many sessions, their states."""
     return {
         "total": len(sessions),
         "sessions": [s.to_dict() for s in sessions.values()],
@@ -100,8 +77,6 @@ def all_sessions_summary() -> dict:
 
 
 def consume_pending_command(source_filter: list[str]) -> dict | None:
-    """Pop and return the first pending command matching the source filter.
-    Empty filter matches any command."""
     if not source_filter:
         if pending_commands:
             return pending_commands.pop(0)
@@ -111,12 +86,8 @@ def consume_pending_command(source_filter: list[str]) -> dict | None:
             return pending_commands.pop(i)
     return None
 
-# ---------------------------------------------------------------------------
-# IP validation
-# ---------------------------------------------------------------------------
 
 def _peer_ip(ws: ServerConnection) -> str:
-    """Extract the IP string from a websocket connection."""
     addr = ws.remote_address
     if isinstance(addr, tuple):
         return str(addr[0])
@@ -127,9 +98,6 @@ def is_allowed(ws: ServerConnection) -> bool:
     ip = _peer_ip(ws)
     return any(ip.startswith(p) for p in ALLOWED_IP_PREFIXES)
 
-# ---------------------------------------------------------------------------
-# broadcast
-# ---------------------------------------------------------------------------
 
 async def broadcast(event: dict) -> None:
     if not connected_phones:
@@ -149,15 +117,11 @@ async def broadcast(event: dict) -> None:
     if gone:
         log.info(f"  pruned {len(gone)} dead connection(s)")
 
-    log.info(f"  → broadcast to {len(connected_phones)} phone(s)")
+    log.info(f"  -> broadcast to {len(connected_phones)} phone(s)")
 
-# ---------------------------------------------------------------------------
-# hook ingestion  (raw TCP on :8766)
-# ---------------------------------------------------------------------------
 
 async def handle_hook(reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter) -> None:
-    """Bidirectional hook handler: receive event, optionally serve pending commands."""
     try:
         data = await asyncio.wait_for(reader.read(1 << 16), timeout=5.0)
         if not data:
@@ -167,7 +131,6 @@ async def handle_hook(reader: asyncio.StreamReader,
         request_type = msg.get("request", "notify")
         response: dict = {"status": "ok"}
 
-        # --- process event if present ---
         etype = msg.get("event_type")
         if etype:
             sid   = msg.get("session_id", "")
@@ -186,7 +149,6 @@ async def handle_hook(reader: asyncio.StreamReader,
             elif etype in ("input_needed", "permission_request"):
                 session.status = "waiting_for_input"
 
-            # build broadcast event (shallow copy so we don't mutate msg)
             event = dict(msg)
             event["project"] = project
             event["active_sessions"] = all_sessions_summary()
@@ -197,15 +159,13 @@ async def handle_hook(reader: asyncio.StreamReader,
 
             await broadcast(event)
 
-        # --- serve pending command if requested ---
         if request_type == "poll_command":
             cmd_filter = msg.get("command_filter", [])
             cmd = consume_pending_command(cmd_filter)
             response["command"] = cmd
             if cmd:
-                log.info(f"  → delivered command to hook: {cmd['source']} = {cmd['text'][:40]}")
+                log.info(f"  -> delivered command to hook: {cmd['source']} = {cmd['text'][:40]}")
 
-        # --- send response ---
         writer.write(json.dumps(response).encode("utf-8"))
         await writer.drain()
 
@@ -222,9 +182,6 @@ async def handle_hook(reader: asyncio.StreamReader,
         except Exception:
             pass
 
-# ---------------------------------------------------------------------------
-# phone commands
-# ---------------------------------------------------------------------------
 
 async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
     msg_type = data.get("type", "")
@@ -235,7 +192,7 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
             "sessions": all_sessions_summary(),
             "pending_commands": len(pending_commands),
         }))
-        log.info(f"  ← status query from {_peer_ip(ws)}")
+        log.info(f"  <- status query from {_peer_ip(ws)}")
         return
 
     if msg_type == "approve":
@@ -243,7 +200,7 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
                "timestamp": _now()}
         pending_commands.append(cmd)
         await ws.send(json.dumps({"type": "command_ack", "text": "approve", "status": "queued"}))
-        log.info(f"  ← APPROVE from {_peer_ip(ws)}")
+        log.info(f"  <- APPROVE from {_peer_ip(ws)}")
         return
 
     if msg_type == "deny":
@@ -251,7 +208,7 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
                "timestamp": _now()}
         pending_commands.append(cmd)
         await ws.send(json.dumps({"type": "command_ack", "text": "deny", "status": "queued"}))
-        log.info(f"  ← DENY from {_peer_ip(ws)}")
+        log.info(f"  <- DENY from {_peer_ip(ws)}")
         return
 
     if msg_type == "command":
@@ -263,7 +220,7 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
                "timestamp": _now()}
         pending_commands.append(cmd)
         await ws.send(json.dumps({"type": "command_ack", "text": text, "status": "queued"}))
-        log.info(f"  ← COMMAND from {_peer_ip(ws)}: {text[:80]}")
+        log.info(f"  <- COMMAND from {_peer_ip(ws)}: {text[:80]}")
         return
 
     if msg_type == "history":
@@ -277,9 +234,6 @@ def _now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
 
-# ---------------------------------------------------------------------------
-# phone WebSocket handler  (:8765)
-# ---------------------------------------------------------------------------
 
 async def handle_phone(ws: ServerConnection) -> None:
     ip = _peer_ip(ws)
@@ -292,7 +246,6 @@ async def handle_phone(ws: ServerConnection) -> None:
     connected_phones.add(ws)
     log.info(f"PHONE CONNECTED  {ip}  (total: {len(connected_phones)})")
 
-    # send current state immediately so the phone UI can render
     await ws.send(json.dumps({
         "type": "state_sync",
         "sessions": all_sessions_summary(),
@@ -312,9 +265,6 @@ async def handle_phone(ws: ServerConnection) -> None:
         connected_phones.discard(ws)
         log.info(f"PHONE DISCONNECTED  {ip}  (total: {len(connected_phones)})")
 
-# ---------------------------------------------------------------------------
-# tailscale detection
-# ---------------------------------------------------------------------------
 
 async def detect_tailscale() -> str | None:
     try:
@@ -331,32 +281,25 @@ async def detect_tailscale() -> str | None:
         pass
     return None
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
 
 async def main() -> None:
-    # 1. TCP listener for hook events
     hook_server = await asyncio.start_server(handle_hook, "127.0.0.1", HOOK_PORT)
     log.info(f"Hook listener ........ tcp://127.0.0.1:{HOOK_PORT}")
 
-    # 2. WebSocket listener for phones
     ws_server = await serve(handle_phone, "0.0.0.0", WS_PORT)
     log.info(f"Phone WebSocket ...... ws://0.0.0.0:{WS_PORT}")
 
-    # 3. show Tailscale info
     ts_ip = await detect_tailscale()
     if ts_ip:
         log.info(f"Tailscale IP ......... {ts_ip}")
         log.info(f"Phone connects to ... ws://{ts_ip}:{WS_PORT}")
     else:
-        log.warning("Tailscale not detected — phone connections limited to local network")
+        log.warning("Tailscale not detected -- phone connections limited to local network")
 
     log.info("")
     log.info("Ping Claude server is LIVE.  Waiting for events...")
     log.info("Press Ctrl+C to stop.\n")
 
-    # keep running until killed
     try:
         await hook_server.serve_forever()
     except asyncio.CancelledError:

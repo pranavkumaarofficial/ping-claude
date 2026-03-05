@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-Ping Claude — Tailscale Helper
+Ping Claude -- Tailscale Helper
 Detects the local Tailscale IP and generates a QR code for phone pairing.
-
-Dependencies: qrcode[pil]  (pip install "qrcode[pil]")
-              Falls back to ASCII QR if Pillow is missing.
 """
 from __future__ import annotations
 
@@ -13,7 +10,6 @@ import sys
 
 
 def get_tailscale_ip() -> str | None:
-    """Return the Tailscale IPv4 address or None."""
     try:
         result = subprocess.run(
             ["tailscale", "ip", "-4"],
@@ -32,7 +28,6 @@ def build_pairing_uri(ip: str, port: int = 8765) -> str:
 
 
 def print_qr_ascii(data: str) -> None:
-    """Print a QR code to the terminal using Unicode block characters."""
     try:
         import qrcode
     except ImportError:
@@ -50,7 +45,6 @@ def print_qr_ascii(data: str) -> None:
 
 
 def save_qr_image(data: str, path: str = "pairing_qr.png") -> str | None:
-    """Save a QR code as a PNG.  Returns the path or None on failure."""
     try:
         import qrcode
         img = qrcode.make(data)
@@ -59,8 +53,6 @@ def save_qr_image(data: str, path: str = "pairing_qr.png") -> str | None:
     except Exception:
         return None
 
-
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     ip = get_tailscale_ip()
