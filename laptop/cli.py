@@ -3,23 +3,23 @@
 Ping Claude CLI
 
 Commands:
-  ping-claude install    — merge hooks into ~/.claude/settings.json
-  ping-claude start      — launch server with QR code
-  ping-claude status     — show server status
-  ping-claude uninstall  — remove hooks from settings.json
+  ping-claude install              -- merge hooks into ~/.claude/settings.json
+  ping-claude start [--telegram]   -- launch server (with optional Telegram bot)
+  ping-claude status               -- show server status
+  ping-claude telegram --token T   -- configure Telegram bot token
+  ping-claude uninstall            -- remove hooks from settings.json
 """
 from __future__ import annotations
 
 import json
 import os
 import socket
-import subprocess
 import sys
 from pathlib import Path
 
 HOOK_SCRIPT = Path(__file__).parent / "hooks" / "companion_hook.py"
-SERVER_SCRIPT = Path(__file__).parent / "server" / "websocket_server.py"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CONFIG_PATH = Path.home() / ".claude" / "ping-claude.json"
 
 
 def load_settings() -> dict:
@@ -37,6 +37,17 @@ def load_settings() -> dict:
 
 def save_settings(data: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_config(data: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def get_hook_command() -> str:
@@ -62,7 +73,7 @@ def install() -> None:
             "hooks": [{
                 "type": "command",
                 "command": hook_cmd,
-                "timeout": 30
+                "timeout": 60
             }]
         }],
         "PermissionRequest": [{
@@ -184,15 +195,50 @@ def status() -> None:
     else:
         print("[!] No ~/.claude/settings.json found")
 
+    config = load_config()
+    tg = config.get("telegram", {})
+    if tg.get("bot_token"):
+        print(f"\n[OK] Telegram bot configured")
+        if tg.get("chat_id"):
+            print(f"  Chat ID: {tg['chat_id']}")
+    else:
+        print(f"\n[!] Telegram not configured")
+        print("  Run: ping-claude telegram --token <BOT_TOKEN>")
+
+    print()
+
+
+def telegram_setup() -> None:
+    token = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--token" and i + 1 < len(sys.argv):
+            token = sys.argv[i + 1]
+
+    if not token:
+        print("Usage: ping-claude telegram --token <BOT_TOKEN>\n")
+        print("Steps:")
+        print("  1. Open Telegram, search for @BotFather")
+        print("  2. Send /newbot and follow the prompts")
+        print("  3. Copy the bot token")
+        print("  4. Run: ping-claude telegram --token <YOUR_TOKEN>")
+        print("  5. Start server: ping-claude start --telegram")
+        print("  6. Send /start to your bot in Telegram")
+        return
+
+    config = load_config()
+    config.setdefault("telegram", {})["bot_token"] = token
+    save_config(config)
+
+    print("[OK] Telegram bot token saved!")
+    print(f"  Config: {CONFIG_PATH}")
+    print("\nNext steps:")
+    print("  1. Start server with: ping-claude start --telegram")
+    print("  2. Open Telegram and send /start to your bot")
     print()
 
 
 def start() -> None:
     print("Starting Ping Claude server...\n")
-
-    if not SERVER_SCRIPT.exists():
-        print(f"ERROR: Server script not found at {SERVER_SCRIPT}")
-        sys.exit(1)
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -214,13 +260,14 @@ def start() -> None:
     except Exception:
         pass
 
+    import asyncio
+    from laptop.server.websocket_server import main as server_main
+
+    enable_tg = "--telegram" in sys.argv
     try:
-        subprocess.run([sys.executable, str(SERVER_SCRIPT)], check=True)
+        asyncio.run(server_main(enable_telegram=enable_tg))
     except KeyboardInterrupt:
         print("\n\nServer stopped.")
-    except subprocess.CalledProcessError as exc:
-        print(f"\nERROR: Server failed with exit code {exc.returncode}")
-        sys.exit(1)
 
 
 def main() -> None:
@@ -239,6 +286,8 @@ def main() -> None:
         start()
     elif cmd == "status":
         status()
+    elif cmd == "telegram":
+        telegram_setup()
     elif cmd in ("-h", "--help", "help"):
         print(__doc__)
     else:
