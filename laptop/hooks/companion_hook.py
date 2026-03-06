@@ -19,7 +19,7 @@ SERVER_PORT = 8766
 SEND_TIMEOUT = 3
 TRANSCRIPT_TAIL = 200_000
 
-STOP_POLL_SECONDS = 10
+STOP_POLL_SECONDS = 45
 STOP_POLL_INTERVAL = 2
 PERM_POLL_SECONDS = 110
 PERM_POLL_INTERVAL = 2
@@ -139,8 +139,6 @@ def poll_command(session_id: str, command_filter: list[str]) -> dict | None:
 
 
 def handle_stop(hook: dict) -> None:
-    is_reentry = hook.get("stop_hook_active", False)
-
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
     payload = build_payload(hook, "task_completed", last_msg)
     payload["request"] = "poll_command"
@@ -150,10 +148,6 @@ def handle_stop(hook: dict) -> None:
     cmd = resp.get("command") if resp else None
     if cmd:
         _block_stop(cmd)
-        return
-
-    if is_reentry:
-        _debug("stop re-entry -- no queued command, letting Claude stop")
         return
 
     sid = hook.get("session_id", "")
@@ -173,7 +167,7 @@ def _block_stop(cmd: dict) -> None:
     _debug(f"BLOCKING STOP -- phone command: {text[:80]}")
     result = {
         "decision": "block",
-        "reason": f"User replied from phone: {text}",
+        "reason": text,
     }
     print(json.dumps(result))
 
