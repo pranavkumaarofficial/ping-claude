@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
 Simulates an Android phone connecting to the Ping Claude server.
-Connects via WebSocket, prints received events, and lets you
-send commands interactively.
 
 Usage:
   python test_phone_sim.py                 # connect to localhost
   python test_phone_sim.py 100.x.x.x      # connect via Tailscale IP
 
-Interactive commands (type and press Enter):
-  status      — query current Claude state
-  approve     — send approval
-  deny        — send denial
-  history     — request recent event history
-  say <text>  — send a voice command
-  quit        — disconnect
+Interactive commands:
+  status             -- query current Claude state
+  target <id>        -- target a session (prefix match), or 'target' to clear
+  approve            -- send approval (to targeted session)
+  deny               -- send denial (to targeted session)
+  say <text>         -- send a text command (to targeted session)
+  history            -- request recent event history
+  quit               -- disconnect
 """
 
 import asyncio
@@ -27,9 +26,10 @@ except ImportError:
     print("ERROR: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
+target_session = ""
+
 
 async def receiver(ws):
-    """Print every message from the server."""
     try:
         async for raw in ws:
             data = json.loads(raw)
@@ -39,17 +39,17 @@ async def receiver(ws):
             print(f"{'='*60}")
             print(json.dumps(data, indent=2, ensure_ascii=False))
             print(f"{'='*60}")
-            print("\n> ", end="", flush=True)
+            print(f"\n[target: {target_session[:12] or 'any'}] > ", end="", flush=True)
     except websockets.ConnectionClosed as exc:
         print(f"\n  Connection closed: {exc}")
 
 
 async def sender(ws):
-    """Read commands from stdin and send to server."""
+    global target_session
     loop = asyncio.get_event_loop()
 
     while True:
-        print("> ", end="", flush=True)
+        print(f"[target: {target_session[:12] or 'any'}] > ", end="", flush=True)
         line = await loop.run_in_executor(None, sys.stdin.readline)
         line = line.strip()
 
@@ -64,14 +64,35 @@ async def sender(ws):
             await ws.send(json.dumps({"type": "status_query"}))
             continue
 
+        if line.startswith("target"):
+            parts = line.split(maxsplit=1)
+            if len(parts) > 1:
+                prefix = parts[1].strip()
+                # request sessions to find full ID from prefix
+                await ws.send(json.dumps({"type": "status_query"}))
+                # wait briefly for response
+                await asyncio.sleep(0.5)
+                target_session = prefix
+                print(f"  -> targeting session: {prefix}")
+            else:
+                target_session = ""
+                print("  -> targeting: any session")
+            continue
+
         if line == "approve":
-            await ws.send(json.dumps({"type": "approve"}))
-            print("  → sent APPROVE")
+            msg = {"type": "approve"}
+            if target_session:
+                msg["session_id"] = target_session
+            await ws.send(json.dumps(msg))
+            print(f"  -> sent APPROVE (session: {target_session[:12] or 'any'})")
             continue
 
         if line == "deny":
-            await ws.send(json.dumps({"type": "deny"}))
-            print("  → sent DENY")
+            msg = {"type": "deny"}
+            if target_session:
+                msg["session_id"] = target_session
+            await ws.send(json.dumps(msg))
+            print(f"  -> sent DENY (session: {target_session[:12] or 'any'})")
             continue
 
         if line == "history":
@@ -81,14 +102,17 @@ async def sender(ws):
         if line.startswith("say "):
             text = line[4:].strip()
             if text:
-                await ws.send(json.dumps({"type": "command", "text": text}))
-                print(f"  → sent COMMAND: {text}")
+                msg = {"type": "command", "text": text}
+                if target_session:
+                    msg["session_id"] = target_session
+                await ws.send(json.dumps(msg))
+                print(f"  -> sent COMMAND (session: {target_session[:12] or 'any'}): {text}")
             else:
                 print("  usage: say <your message>")
             continue
 
         print(f"  Unknown command: {line}")
-        print("  Available: status | approve | deny | history | say <text> | quit")
+        print("  Available: status | target <id> | approve | deny | say <text> | history | quit")
 
 
 async def main():
@@ -100,7 +124,6 @@ async def main():
     try:
         async with websockets.connect(uri) as ws:
             print(f"Connected!\n")
-            # run receiver and sender concurrently
             recv_task = asyncio.create_task(receiver(ws))
             send_task = asyncio.create_task(sender(ws))
             done, pending = await asyncio.wait(

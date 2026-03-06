@@ -57,6 +57,8 @@ sessions: dict[str, SessionState] = {}
 event_history: list[dict] = []
 connected_phones: set[ServerConnection] = set()
 pending_commands: list[dict] = []
+event_listeners: list = []
+polling_sessions: dict[str, float] = {}  # session_id -> last poll timestamp
 
 
 def get_or_create_session(session_id: str) -> SessionState:
@@ -67,23 +69,48 @@ def get_or_create_session(session_id: str) -> SessionState:
 
 
 def all_sessions_summary() -> dict:
+    now = time.time()
+    session_list = []
+    for s in sessions.values():
+        d = s.to_dict()
+        d["polling"] = is_session_polling(s.session_id)
+        session_list.append(d)
     return {
         "total": len(sessions),
-        "sessions": [s.to_dict() for s in sessions.values()],
+        "sessions": session_list,
         "waiting": sum(1 for s in sessions.values() if s.status == "waiting_for_input"),
         "working": sum(1 for s in sessions.values() if s.status == "working"),
         "idle": sum(1 for s in sessions.values() if s.status == "idle"),
     }
 
 
-def consume_pending_command(source_filter: list[str]) -> dict | None:
-    if not source_filter:
-        if pending_commands:
-            return pending_commands.pop(0)
-        return None
+POLL_ALIVE_THRESHOLD = 10  # seconds -- hook polls every 2s, so 10s means definitely dead
+
+
+def is_session_polling(session_id: str) -> bool:
+    if not session_id:
+        return False
+    for sid, ts in polling_sessions.items():
+        if _session_match(sid, session_id) and (time.time() - ts) < POLL_ALIVE_THRESHOLD:
+            return True
+    return False
+
+
+def _session_match(a: str, b: str) -> bool:
+    if not a or not b:
+        return True
+    return a.startswith(b) or b.startswith(a)
+
+
+def consume_pending_command(source_filter: list[str], session_id: str = "") -> dict | None:
     for i, cmd in enumerate(pending_commands):
-        if cmd["source"] in source_filter:
-            return pending_commands.pop(i)
+        cmd_sid = cmd.get("session_id", "")
+        if cmd_sid and session_id and not _session_match(cmd_sid, session_id):
+            continue
+        # source filter
+        if source_filter and cmd["source"] not in source_filter:
+            continue
+        return pending_commands.pop(i)
     return None
 
 
@@ -100,10 +127,6 @@ def is_allowed(ws: ServerConnection) -> bool:
 
 
 async def broadcast(event: dict) -> None:
-    if not connected_phones:
-        log.info("  (no phones connected)")
-        return
-
     payload = json.dumps(event)
     gone: set[ServerConnection] = set()
 
@@ -117,7 +140,14 @@ async def broadcast(event: dict) -> None:
     if gone:
         log.info(f"  pruned {len(gone)} dead connection(s)")
 
-    log.info(f"  -> broadcast to {len(connected_phones)} phone(s)")
+    if connected_phones:
+        log.info(f"  -> broadcast to {len(connected_phones)} phone(s)")
+
+    for listener in event_listeners:
+        try:
+            await listener(event)
+        except Exception as exc:
+            log.warning(f"  event listener error: {exc}")
 
 
 async def handle_hook(reader: asyncio.StreamReader,
@@ -161,7 +191,10 @@ async def handle_hook(reader: asyncio.StreamReader,
 
         if request_type == "poll_command":
             cmd_filter = msg.get("command_filter", [])
-            cmd = consume_pending_command(cmd_filter)
+            poll_sid = msg.get("session_id", "")
+            if poll_sid:
+                polling_sessions[poll_sid] = time.time()
+            cmd = consume_pending_command(cmd_filter, poll_sid)
             response["command"] = cmd
             if cmd:
                 log.info(f"  -> delivered command to hook: {cmd['source']} = {cmd['text'][:40]}")
@@ -195,20 +228,22 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
         log.info(f"  <- status query from {_peer_ip(ws)}")
         return
 
+    sid = data.get("session_id", "")
+
     if msg_type == "approve":
         cmd = {"text": "y", "source": "phone_approve",
-               "timestamp": _now()}
+               "session_id": sid, "timestamp": _now()}
         pending_commands.append(cmd)
         await ws.send(json.dumps({"type": "command_ack", "text": "approve", "status": "queued"}))
-        log.info(f"  <- APPROVE from {_peer_ip(ws)}")
+        log.info(f"  <- APPROVE from {_peer_ip(ws)}  session={sid[:12] or 'any'}")
         return
 
     if msg_type == "deny":
         cmd = {"text": "n", "source": "phone_deny",
-               "timestamp": _now()}
+               "session_id": sid, "timestamp": _now()}
         pending_commands.append(cmd)
         await ws.send(json.dumps({"type": "command_ack", "text": "deny", "status": "queued"}))
-        log.info(f"  <- DENY from {_peer_ip(ws)}")
+        log.info(f"  <- DENY from {_peer_ip(ws)}  session={sid[:12] or 'any'}")
         return
 
     if msg_type == "command":
@@ -217,10 +252,10 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
             await ws.send(json.dumps({"type": "error", "message": "empty command"}))
             return
         cmd = {"text": text, "source": "phone_voice",
-               "timestamp": _now()}
+               "session_id": sid, "timestamp": _now()}
         pending_commands.append(cmd)
-        await ws.send(json.dumps({"type": "command_ack", "text": text, "status": "queued"}))
-        log.info(f"  <- COMMAND from {_peer_ip(ws)}: {text[:80]}")
+        await ws.send(json.dumps({"type": "command_ack", "text": text, "status": "queued", "session_id": sid}))
+        log.info(f"  <- COMMAND from {_peer_ip(ws)}  session={sid[:12] or 'any'}: {text[:80]}")
         return
 
     if msg_type == "history":
@@ -282,12 +317,27 @@ async def detect_tailscale() -> str | None:
     return None
 
 
-async def main() -> None:
+async def main(enable_telegram: bool = False) -> None:
     hook_server = await asyncio.start_server(handle_hook, "127.0.0.1", HOOK_PORT)
     log.info(f"Hook listener ........ tcp://127.0.0.1:{HOOK_PORT}")
 
     ws_server = await serve(handle_phone, "0.0.0.0", WS_PORT)
     log.info(f"Phone WebSocket ...... ws://0.0.0.0:{WS_PORT}")
+
+    telegram_bridge = None
+    if enable_telegram:
+        try:
+            from laptop.server.telegram_bot import TelegramBridge, load_config
+            config = load_config()
+            bot_token = config.get("telegram", {}).get("bot_token", "")
+            if bot_token:
+                telegram_bridge = TelegramBridge(bot_token, pending_commands.append)
+                await telegram_bridge.start()
+                event_listeners.append(telegram_bridge.on_event)
+            else:
+                log.warning("Telegram: no bot token configured. Run: ping-claude telegram --token <TOKEN>")
+        except ImportError:
+            log.warning("Telegram: python-telegram-bot not installed. Run: pip install python-telegram-bot")
 
     ts_ip = await detect_tailscale()
     if ts_ip:
@@ -305,6 +355,8 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        if telegram_bridge:
+            await telegram_bridge.stop()
         ws_server.close()
         await ws_server.wait_closed()
         hook_server.close()
@@ -313,7 +365,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    enable_tg = "--telegram" in sys.argv
     try:
-        asyncio.run(main())
+        asyncio.run(main(enable_telegram=enable_tg))
     except KeyboardInterrupt:
         log.info("\nShutting down...")
