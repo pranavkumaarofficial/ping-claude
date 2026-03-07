@@ -7,6 +7,7 @@ Commands:
   ping-claude start [--telegram]   -- launch server (with optional Telegram bot)
   ping-claude status               -- show server status
   ping-claude telegram --token T   -- configure Telegram bot token
+  ping-claude voice --key K        -- configure Groq API key for voice
   ping-claude uninstall            -- remove hooks from settings.json
 """
 from __future__ import annotations
@@ -90,6 +91,22 @@ def install() -> None:
                 "command": hook_cmd,
                 "timeout": 5
             }]
+        }],
+        "PreToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{
+                "type": "command",
+                "command": hook_cmd,
+                "timeout": 3
+            }]
+        }],
+        "PostToolUse": [{
+            "matcher": "Bash|Edit|Write|Read|Grep|Glob|WebSearch|WebFetch|Task",
+            "hooks": [{
+                "type": "command",
+                "command": hook_cmd,
+                "timeout": 5
+            }]
         }]
     }
 
@@ -119,7 +136,10 @@ def uninstall() -> None:
     hooks = settings.get("hooks", {})
 
     removed = []
-    for event_type in ["Stop", "PermissionRequest", "Notification"]:
+    all_hook_events = [
+        "Stop", "PermissionRequest", "Notification", "PreToolUse", "PostToolUse",
+    ]
+    for event_type in all_hook_events:
         if event_type in hooks:
             configs = hooks[event_type]
             is_ping_claude = False
@@ -176,7 +196,8 @@ def status() -> None:
         settings = load_settings()
         hooks = settings.get("hooks", {})
         ping_claude_hooks = []
-        for event_type in ["Stop", "PermissionRequest", "Notification"]:
+        for event_type in ["Stop", "PermissionRequest", "Notification",
+                           "PreToolUse", "PostToolUse"]:
             if event_type in hooks:
                 for config in hooks[event_type]:
                     for hook in config.get("hooks", []):
@@ -204,6 +225,12 @@ def status() -> None:
     else:
         print(f"\n[!] Telegram not configured")
         print("  Run: ping-claude telegram --token <BOT_TOKEN>")
+
+    if config.get("groq_api_key"):
+        print("[OK] Voice commands enabled (Groq Whisper)")
+    else:
+        print("[!] Voice not configured")
+        print("  Run: ping-claude voice --key <GROQ_API_KEY>")
 
     print()
 
@@ -234,6 +261,31 @@ def telegram_setup() -> None:
     print("\nNext steps:")
     print("  1. Start server with: ping-claude start --telegram")
     print("  2. Open Telegram and send /start to your bot")
+    print()
+
+
+def voice_setup() -> None:
+    key = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--key" and i + 1 < len(sys.argv):
+            key = sys.argv[i + 1]
+
+    if not key:
+        print("Usage: ping-claude voice --key <GROQ_API_KEY>\n")
+        print("Steps:")
+        print("  1. Go to https://console.groq.com/keys")
+        print("  2. Create a free API key")
+        print("  3. Run: ping-claude voice --key <YOUR_KEY>")
+        print("  4. Send voice messages in Telegram -- they'll be transcribed")
+        return
+
+    config = load_config()
+    config["groq_api_key"] = key
+    save_config(config)
+
+    print("[OK] Groq API key saved!")
+    print(f"  Config: {CONFIG_PATH}")
+    print("\nVoice commands are now enabled in Telegram.")
     print()
 
 
@@ -288,6 +340,8 @@ def main() -> None:
         status()
     elif cmd == "telegram":
         telegram_setup()
+    elif cmd == "voice":
+        voice_setup()
     elif cmd in ("-h", "--help", "help"):
         print(__doc__)
     else:

@@ -31,6 +31,7 @@ HOOK_PORT = 8766
 WS_PORT   = 8765
 ALLOWED_IP_PREFIXES = ("100.", "127.", "::1", "fd7a:", "10.", "192.168.")
 MAX_EVENT_HISTORY = 50
+ACTIVITY_EVENTS = frozenset({"tool_start", "tool_end"})
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +86,7 @@ def all_sessions_summary() -> dict:
 
 
 POLL_ALIVE_THRESHOLD = 10  # seconds -- hook polls every 2s, so 10s means definitely dead
+DEAD_SESSION_TTL = 300     # seconds -- auto-prune sessions dead longer than this
 
 
 def is_session_polling(session_id: str) -> bool:
@@ -100,6 +102,38 @@ def _session_match(a: str, b: str) -> bool:
     if not a or not b:
         return True
     return a.startswith(b) or b.startswith(a)
+
+
+def prune_dead_sessions(force: bool = False) -> int:
+    """Remove sessions that are no longer polling.
+
+    force=True removes all dead sessions immediately.
+    force=False only removes sessions dead longer than DEAD_SESSION_TTL.
+    """
+    now = time.time()
+    dead_sids = []
+    for sid in list(sessions.keys()):
+        if is_session_polling(sid):
+            continue
+        if force:
+            dead_sids.append(sid)
+        else:
+            last_poll = polling_sessions.get(sid, 0)
+            if last_poll and (now - last_poll) > DEAD_SESSION_TTL:
+                dead_sids.append(sid)
+    for sid in dead_sids:
+        del sessions[sid]
+        polling_sessions.pop(sid, None)
+    if dead_sids:
+        log.info(f"  pruned {len(dead_sids)} dead session(s)")
+    return len(dead_sids)
+
+
+async def _prune_loop() -> None:
+    """Periodically remove stale dead sessions."""
+    while True:
+        await asyncio.sleep(120)
+        prune_dead_sessions()
 
 
 def consume_pending_command(source_filter: list[str], session_id: str = "") -> dict | None:
@@ -166,26 +200,31 @@ async def handle_hook(reader: asyncio.StreamReader,
             sid   = msg.get("session_id", "")
             cwd   = msg.get("cwd", "")
             project = Path(cwd).name if cwd else "unknown"
-            log.info(f"HOOK  {etype}  session={sid[:12]}  project={project}")
+            is_activity = etype in ACTIVITY_EVENTS
 
             session = get_or_create_session(sid)
             session.last_event_type = etype
-            session.last_message    = msg.get("last_message", "")
             session.cwd             = cwd
             session.last_event_time = msg.get("timestamp", "")
 
-            if etype == "task_completed":
-                session.status = "idle"
-            elif etype in ("input_needed", "permission_request"):
-                session.status = "waiting_for_input"
+            if is_activity:
+                session.status = "working"
+            else:
+                log.info(f"HOOK  {etype}  session={sid[:12]}  project={project}")
+                session.last_message = msg.get("last_message", "")
+                if etype == "task_completed":
+                    session.status = "idle"
+                elif etype in ("input_needed", "permission_request"):
+                    session.status = "waiting_for_input"
 
             event = dict(msg)
             event["project"] = project
-            event["active_sessions"] = all_sessions_summary()
 
-            event_history.append(event)
-            if len(event_history) > MAX_EVENT_HISTORY:
-                event_history.pop(0)
+            if not is_activity:
+                event["active_sessions"] = all_sessions_summary()
+                event_history.append(event)
+                if len(event_history) > MAX_EVENT_HISTORY:
+                    event_history.pop(0)
 
             await broadcast(event)
 
@@ -345,6 +384,8 @@ async def main(enable_telegram: bool = False) -> None:
         log.info(f"Phone connects to ... ws://{ts_ip}:{WS_PORT}")
     else:
         log.warning("Tailscale not detected -- phone connections limited to local network")
+
+    asyncio.create_task(_prune_loop())
 
     log.info("")
     log.info("Ping Claude server is LIVE.  Waiting for events...")
