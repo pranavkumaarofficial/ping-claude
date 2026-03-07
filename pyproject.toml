@@ -29,8 +29,16 @@ dependencies = [
     "qrcode[pil]>=7.4.2",
 ]
 
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=21.0", "aiohttp>=3.9"]
+webapp = ["aiohttp>=3.9"]
+all = ["python-telegram-bot>=21.0", "aiohttp>=3.9"]
+
 [project.scripts]
 ping-claude = "laptop.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["laptop*"]
+
+[tool.setuptools.package-data]
+"laptop.server" = ["webapp/**/*"]

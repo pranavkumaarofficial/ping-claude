@@ -3,6 +3,12 @@
 Ping Claude CLI
 
 Commands:
+  ping-claude install                        -- merge hooks into ~/.claude/settings.json
+  ping-claude start [--telegram] [--webapp]  -- launch server (with optional integrations)
+  ping-claude status                         -- show server status
+  ping-claude telegram --token T             -- configure Telegram bot token
+  ping-claude voice --key K                  -- configure Groq API key for voice
+  ping-claude uninstall                      -- remove hooks from settings.json
   ping-claude install              -- merge hooks into ~/.claude/settings.json
   ping-claude start                -- launch server
   ping-claude status               -- show server status
@@ -51,8 +57,8 @@ def save_config(data: dict) -> None:
 
 
 def get_hook_command() -> str:
-    python_path = sys.executable
-    hook_path = HOOK_SCRIPT.resolve()
+    python_path = sys.executable.replace("\\", "/")
+    hook_path = str(HOOK_SCRIPT.resolve()).replace("\\", "/")
     return f'{python_path} "{hook_path}"'
 
 
@@ -276,6 +282,10 @@ def start() -> None:
     import asyncio
     from laptop.server.websocket_server import main as server_main
 
+    enable_tg = "--telegram" in sys.argv
+    enable_wa = "--webapp" in sys.argv
+    try:
+        asyncio.run(server_main(enable_telegram=enable_tg, enable_webapp=enable_wa))
     try:
         asyncio.run(server_main())
     except KeyboardInterrupt:
