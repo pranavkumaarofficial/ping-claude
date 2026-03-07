@@ -4,9 +4,8 @@ Ping Claude CLI
 
 Commands:
   ping-claude install              -- merge hooks into ~/.claude/settings.json
-  ping-claude start [--telegram]   -- launch server (with optional Telegram bot)
+  ping-claude start                -- launch server
   ping-claude status               -- show server status
-  ping-claude telegram --token T   -- configure Telegram bot token
   ping-claude voice --key K        -- configure Groq API key for voice
   ping-claude uninstall            -- remove hooks from settings.json
 """
@@ -217,50 +216,12 @@ def status() -> None:
         print("[!] No ~/.claude/settings.json found")
 
     config = load_config()
-    tg = config.get("telegram", {})
-    if tg.get("bot_token"):
-        print(f"\n[OK] Telegram bot configured")
-        if tg.get("chat_id"):
-            print(f"  Chat ID: {tg['chat_id']}")
-    else:
-        print(f"\n[!] Telegram not configured")
-        print("  Run: ping-claude telegram --token <BOT_TOKEN>")
-
     if config.get("groq_api_key"):
         print("[OK] Voice commands enabled (Groq Whisper)")
     else:
         print("[!] Voice not configured")
         print("  Run: ping-claude voice --key <GROQ_API_KEY>")
 
-    print()
-
-
-def telegram_setup() -> None:
-    token = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--token" and i + 1 < len(sys.argv):
-            token = sys.argv[i + 1]
-
-    if not token:
-        print("Usage: ping-claude telegram --token <BOT_TOKEN>\n")
-        print("Steps:")
-        print("  1. Open Telegram, search for @BotFather")
-        print("  2. Send /newbot and follow the prompts")
-        print("  3. Copy the bot token")
-        print("  4. Run: ping-claude telegram --token <YOUR_TOKEN>")
-        print("  5. Start server: ping-claude start --telegram")
-        print("  6. Send /start to your bot in Telegram")
-        return
-
-    config = load_config()
-    config.setdefault("telegram", {})["bot_token"] = token
-    save_config(config)
-
-    print("[OK] Telegram bot token saved!")
-    print(f"  Config: {CONFIG_PATH}")
-    print("\nNext steps:")
-    print("  1. Start server with: ping-claude start --telegram")
-    print("  2. Open Telegram and send /start to your bot")
     print()
 
 
@@ -276,7 +237,7 @@ def voice_setup() -> None:
         print("  1. Go to https://console.groq.com/keys")
         print("  2. Create a free API key")
         print("  3. Run: ping-claude voice --key <YOUR_KEY>")
-        print("  4. Send voice messages in Telegram -- they'll be transcribed")
+        print("  4. Send voice messages in the web UI -- they'll be transcribed")
         return
 
     config = load_config()
@@ -285,7 +246,7 @@ def voice_setup() -> None:
 
     print("[OK] Groq API key saved!")
     print(f"  Config: {CONFIG_PATH}")
-    print("\nVoice commands are now enabled in Telegram.")
+    print("\nVoice commands are now enabled.")
     print()
 
 
@@ -315,9 +276,8 @@ def start() -> None:
     import asyncio
     from laptop.server.websocket_server import main as server_main
 
-    enable_tg = "--telegram" in sys.argv
     try:
-        asyncio.run(server_main(enable_telegram=enable_tg))
+        asyncio.run(server_main())
     except KeyboardInterrupt:
         print("\n\nServer stopped.")
 
@@ -338,8 +298,6 @@ def main() -> None:
         start()
     elif cmd == "status":
         status()
-    elif cmd == "telegram":
-        telegram_setup()
     elif cmd == "voice":
         voice_setup()
     elif cmd in ("-h", "--help", "help"):

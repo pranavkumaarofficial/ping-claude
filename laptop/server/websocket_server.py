@@ -356,27 +356,12 @@ async def detect_tailscale() -> str | None:
     return None
 
 
-async def main(enable_telegram: bool = False) -> None:
+async def main() -> None:
     hook_server = await asyncio.start_server(handle_hook, "127.0.0.1", HOOK_PORT)
     log.info(f"Hook listener ........ tcp://127.0.0.1:{HOOK_PORT}")
 
     ws_server = await serve(handle_phone, "0.0.0.0", WS_PORT)
     log.info(f"Phone WebSocket ...... ws://0.0.0.0:{WS_PORT}")
-
-    telegram_bridge = None
-    if enable_telegram:
-        try:
-            from laptop.server.telegram_bot import TelegramBridge, load_config
-            config = load_config()
-            bot_token = config.get("telegram", {}).get("bot_token", "")
-            if bot_token:
-                telegram_bridge = TelegramBridge(bot_token, pending_commands.append)
-                await telegram_bridge.start()
-                event_listeners.append(telegram_bridge.on_event)
-            else:
-                log.warning("Telegram: no bot token configured. Run: ping-claude telegram --token <TOKEN>")
-        except ImportError:
-            log.warning("Telegram: python-telegram-bot not installed. Run: pip install python-telegram-bot")
 
     ts_ip = await detect_tailscale()
     if ts_ip:
@@ -396,8 +381,6 @@ async def main(enable_telegram: bool = False) -> None:
     except asyncio.CancelledError:
         pass
     finally:
-        if telegram_bridge:
-            await telegram_bridge.stop()
         ws_server.close()
         await ws_server.wait_closed()
         hook_server.close()
@@ -406,8 +389,7 @@ async def main(enable_telegram: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    enable_tg = "--telegram" in sys.argv
     try:
-        asyncio.run(main(enable_telegram=enable_tg))
+        asyncio.run(main())
     except KeyboardInterrupt:
         log.info("\nShutting down...")
