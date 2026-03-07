@@ -2,7 +2,8 @@
 """
 Ping Claude -- Hook Script (Bidirectional)
 
-Handles Stop, PermissionRequest, and Notification hooks from Claude Code.
+Handles Stop, PermissionRequest, Notification, PreToolUse, and PostToolUse
+hooks from Claude Code.
 Dependencies: NONE (stdlib only).
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ SERVER_PORT = 8766
 SEND_TIMEOUT = 3
 TRANSCRIPT_TAIL = 200_000
 
-STOP_POLL_SECONDS = 45
+STOP_POLL_SECONDS = 300
 STOP_POLL_INTERVAL = 2
 PERM_POLL_SECONDS = 110
 PERM_POLL_INTERVAL = 2
@@ -139,14 +140,20 @@ def poll_command(session_id: str, command_filter: list[str]) -> dict | None:
 
 
 def handle_stop(hook: dict) -> None:
+    if hook.get("stop_hook_active", False):
+        time.sleep(1)  # re-entry: wait for transcript flush
+
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
     payload = build_payload(hook, "task_completed", last_msg)
     payload["request"] = "poll_command"
-    payload["command_filter"] = ["phone_voice"]
+    payload["command_filter"] = ["phone_voice", "phone_terminate"]
 
     resp = send_recv(payload)
     cmd = resp.get("command") if resp else None
     if cmd:
+        if cmd.get("source") == "phone_terminate":
+            _debug("TERMINATE received -- letting session end")
+            return
         _block_stop(cmd)
         return
 
@@ -154,8 +161,11 @@ def handle_stop(hook: dict) -> None:
     iterations = STOP_POLL_SECONDS // STOP_POLL_INTERVAL
     for _ in range(iterations):
         time.sleep(STOP_POLL_INTERVAL)
-        cmd = poll_command(sid, ["phone_voice"])
+        cmd = poll_command(sid, ["phone_voice", "phone_terminate"])
         if cmd:
+            if cmd.get("source") == "phone_terminate":
+                _debug("TERMINATE received -- letting session end")
+                return
             _block_stop(cmd)
             return
 
@@ -230,6 +240,71 @@ def handle_notification(hook: dict) -> None:
     _debug("notification sent")
 
 
+def _summarize_tool_input(tool_name: str, tool_input) -> str:
+    if not isinstance(tool_input, dict):
+        return str(tool_input)[:100]
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        return (cmd[:120] + "...") if len(cmd) > 120 else cmd
+    if tool_name in ("Read", "Edit", "Write"):
+        path = tool_input.get("file_path", "")
+        return path.replace("\\", "/").rsplit("/", 1)[-1] if path else ""
+    if tool_name == "Glob":
+        return tool_input.get("pattern", "")[:80]
+    if tool_name == "Grep":
+        return tool_input.get("pattern", "")[:60]
+    if tool_name == "WebSearch":
+        return tool_input.get("query", "")[:80]
+    if tool_name == "WebFetch":
+        return tool_input.get("url", "")[:80]
+    if tool_name == "Task":
+        return tool_input.get("description", "")[:80]
+    return ""
+
+
+def _summarize_tool_result(tool_name: str, tool_response) -> str:
+    if tool_response is None:
+        return ""
+    if not isinstance(tool_response, dict):
+        return ""
+    if tool_name == "Bash":
+        exit_code = tool_response.get("exitCode", tool_response.get("exit_code", ""))
+        if exit_code != "":
+            stdout = str(tool_response.get("stdout", ""))
+            out = [l for l in stdout.strip().splitlines() if l.strip()]
+            last = out[-1][:50] if out else ""
+            if last:
+                return f"exit {exit_code}: {last}"
+            return f"exit {exit_code}"
+    return ""
+
+
+def handle_tool_start(hook: dict) -> None:
+    send_recv({
+        "event_type": "tool_start",
+        "session_id": hook.get("session_id", ""),
+        "cwd": hook.get("cwd", ""),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tool_name": hook.get("tool_name", ""),
+        "tool_input_summary": _summarize_tool_input(
+            hook.get("tool_name", ""), hook.get("tool_input", {})),
+    })
+
+
+def handle_tool_end(hook: dict) -> None:
+    send_recv({
+        "event_type": "tool_end",
+        "session_id": hook.get("session_id", ""),
+        "cwd": hook.get("cwd", ""),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tool_name": hook.get("tool_name", ""),
+        "tool_input_summary": _summarize_tool_input(
+            hook.get("tool_name", ""), hook.get("tool_input", {})),
+        "tool_result_summary": _summarize_tool_result(
+            hook.get("tool_name", ""), hook.get("tool_response")),
+    })
+
+
 def main() -> None:
     _debug("HOOK INVOKED")
 
@@ -253,6 +328,12 @@ def main() -> None:
             handle_notification(hook)
         else:
             _debug(f"notification type '{ntype}' -- ignoring")
+
+    elif name == "PreToolUse":
+        handle_tool_start(hook)
+
+    elif name == "PostToolUse":
+        handle_tool_end(hook)
 
     else:
         _debug(f"unknown hook event: {name}")
