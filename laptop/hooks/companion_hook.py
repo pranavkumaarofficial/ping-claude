@@ -186,8 +186,10 @@ def handle_permission_request(hook: dict) -> None:
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
 
     payload = build_payload(hook, "permission_request", last_msg)
-    payload["tool_name"] = hook.get("tool_name", "")
-    payload["tool_input"] = _truncate(hook.get("tool_input", {}), 500)
+    tool_name = hook.get("tool_name", "")
+    payload["tool_name"] = tool_name
+    max_len = 3000 if tool_name == "AskUserQuestion" else 500
+    payload["tool_input"] = _truncate(hook.get("tool_input", {}), max_len)
     payload["request"] = "poll_command"
     payload["command_filter"] = ["phone_approve", "phone_deny"]
 

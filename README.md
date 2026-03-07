@@ -151,12 +151,12 @@ When a permission request arrives, you get **[Approve]** and **[Deny]** buttons 
 ## CLI reference
 
 ```bash
-ping-claude install              # Add hooks to ~/.claude/settings.json
-ping-claude uninstall            # Remove hooks
-ping-claude start [--telegram]   # Start the server (add --telegram for Telegram bot)
-ping-claude status               # Show server status, hooks, and config
-ping-claude telegram --token T   # Save Telegram bot token
-ping-claude voice --key K        # Save Groq API key for voice transcription
+ping-claude install                        # Add hooks to ~/.claude/settings.json
+ping-claude uninstall                      # Remove hooks
+ping-claude start [--telegram] [--webapp]  # Start the server (add flags for integrations)
+ping-claude status                         # Show server status, hooks, and config
+ping-claude telegram --token T             # Save Telegram bot token
+ping-claude voice --key K                  # Save Groq API key for voice transcription
 ```
 
 ## Architecture
@@ -170,7 +170,12 @@ ping-claude/
 │   └── server/
 │       ├── websocket_server.py   # Event hub: TCP for hooks, WebSocket for phones
 │       ├── telegram_bot.py       # Telegram bridge: notifications, commands, voice, activity
-│       └── tailscale_helper.py   # Tailscale IP detection + QR code pairing
+│       ├── tailscale_helper.py   # Tailscale IP detection + QR code pairing
+│       ├── webapp_server.py      # HTTP server for webapp static files (aiohttp)
+│       └── webapp/               # React PWA (Vite build)
+│           ├── src/              # React source (App.jsx, index.css)
+│           ├── public/           # Static assets (icons, manifest, sw.js)
+│           └── dist/             # Built output (served by webapp_server.py)
 ├── pyproject.toml                # Package config, dependencies, entry points
 └── README.md
 ```
@@ -202,6 +207,44 @@ If no command arrives within 5 minutes, the hook times out and the session ends 
 - `qrcode[pil]` (optional, for Tailscale QR pairing)
 
 All Telegram dependencies install automatically with `pip install -e ".[telegram]"`.
+
+## Webapp UI (PWA)
+
+ping-claude includes a mobile-first web app that gives you the same control as Telegram — directly from your phone's browser. No app store needed.
+
+### Setup
+
+```bash
+pip install -e ".[webapp]"    # or ".[all]" for Telegram + webapp
+
+# Build the webapp (one-time, requires Node.js)
+cd laptop/server/webapp
+npm install && npm run build
+cd ../../..
+
+ping-claude start --webapp    # add --telegram too if you want both
+```
+
+Open `http://<your-tailscale-ip>:8767` on your phone. Add to Home Screen for a native app experience.
+
+### What you get
+
+- **Real-time event feed** — task completions, permission requests, and input prompts appear as cards
+- **Approve/Deny buttons** — permission request cards have inline action buttons
+- **Send commands** — type in the input bar to send follow-up commands to Claude
+- **Session targeting** — dropdown to target specific sessions when running multiple Claude instances
+- **Activity feed** — collapsible live view of what Claude is doing (tool starts/ends)
+- **Browser notifications** — get notified even when the tab is in the background
+- **Works offline** — the app shell is cached by a service worker for instant loading
+
+### Architecture
+
+The webapp is a vanilla HTML/JS/CSS PWA (no build step). A lightweight aiohttp server on port 8767 serves the static files. The webapp connects to the existing WebSocket server on port 8765 — the same protocol phone clients already use.
+
+```
+Browser (PWA)  ──  WS :8765  ──>  websocket_server.py (existing)
+                   HTTP :8767 -->  webapp_server.py (static files)
+```
 
 ## Roadmap
 

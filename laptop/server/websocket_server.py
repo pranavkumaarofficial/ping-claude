@@ -255,6 +255,42 @@ async def handle_hook(reader: asyncio.StreamReader,
             pass
 
 
+async def _transcribe_voice(audio_b64: str) -> str:
+    """Transcribe base64-encoded audio via Groq Whisper API."""
+    import base64
+    config_path = Path.home() / ".claude" / "ping-claude.json"
+    if not config_path.exists():
+        raise RuntimeError("No config file found")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    api_key = config.get("groq_api_key", "")
+    if not api_key:
+        raise RuntimeError("No Groq API key configured")
+
+    audio_bytes = base64.b64decode(audio_b64)
+    try:
+        import aiohttp
+    except ImportError:
+        raise RuntimeError("aiohttp not installed")
+
+    form = aiohttp.FormData()
+    form.add_field("file", audio_bytes, filename="voice.webm", content_type="audio/webm")
+    form.add_field("model", "whisper-large-v3")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data=form,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                log.warning(f"Groq transcription failed: {resp.status} {body[:200]}")
+                return ""
+            result = await resp.json()
+            return result.get("text", "").strip()
+
+
 async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
     msg_type = data.get("type", "")
 
@@ -299,6 +335,84 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
 
     if msg_type == "history":
         await ws.send(json.dumps({"type": "history_response", "events": event_history[-10:]}))
+        return
+
+    if msg_type == "end_session":
+        if not sid:
+            await ws.send(json.dumps({"type": "error", "message": "session_id required"}))
+            return
+        cmd = {"text": "/end", "source": "phone_terminate",
+               "session_id": sid, "timestamp": _now()}
+        pending_commands.append(cmd)
+        await ws.send(json.dumps({"type": "command_ack", "text": "end_session", "status": "queued", "session_id": sid}))
+        log.info(f"  <- END SESSION from {_peer_ip(ws)}  session={sid[:12]}")
+        return
+
+    if msg_type == "end_all":
+        for s in list(sessions.values()):
+            cmd = {"text": "/end", "source": "phone_terminate",
+                   "session_id": s.session_id, "timestamp": _now()}
+            pending_commands.append(cmd)
+        await ws.send(json.dumps({"type": "command_ack", "text": "end_all", "status": "queued"}))
+        log.info(f"  <- END ALL from {_peer_ip(ws)}  ({len(sessions)} sessions)")
+        return
+
+    if msg_type == "image":
+        image_b64 = data.get("image", "")
+        caption = data.get("text", "").strip()
+        if not image_b64:
+            await ws.send(json.dumps({"type": "error", "message": "no image data"}))
+            return
+        import base64, tempfile
+        img_bytes = base64.b64decode(image_b64)
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", prefix="ping-claude-", delete=False)
+        tmp.write(img_bytes)
+        tmp.close()
+        img_path = tmp.name.replace("\\", "/")
+        text = f"Here is an image I'm sharing: {img_path}"
+        if caption:
+            text += f"\n{caption}"
+        cmd = {"text": text, "source": "phone_image",
+               "session_id": sid, "timestamp": _now()}
+        pending_commands.append(cmd)
+        await ws.send(json.dumps({"type": "command_ack", "text": f"Image saved & sent", "status": "queued", "session_id": sid}))
+        log.info(f"  <- IMAGE from {_peer_ip(ws)}  saved to {img_path}")
+        return
+
+    if msg_type == "voice":
+        audio_b64 = data.get("audio", "")
+        if not audio_b64:
+            await ws.send(json.dumps({"type": "error", "message": "no audio data"}))
+            return
+        log.info(f"  <- VOICE from {_peer_ip(ws)}  ({len(audio_b64) // 1024}KB b64)")
+        try:
+            text = await _transcribe_voice(audio_b64)
+        except Exception as e:
+            log.warning(f"Voice transcription failed: {e}")
+            await ws.send(json.dumps({"type": "error", "message": "Transcription failed"}))
+            return
+        if not text:
+            await ws.send(json.dumps({"type": "error", "message": "Could not transcribe audio"}))
+            return
+        cmd = {"text": text, "source": "phone_voice",
+               "session_id": sid, "timestamp": _now()}
+        pending_commands.append(cmd)
+        await ws.send(json.dumps({"type": "command_ack", "text": text, "status": "queued", "session_id": sid}))
+        log.info(f"  <- VOICE transcribed: {text[:80]}")
+        return
+
+    if msg_type == "clear_dead":
+        count = prune_dead_sessions(force=True)
+        await ws.send(json.dumps({
+            "type": "command_ack", "text": f"cleared {count} dead session(s)", "status": "ok",
+        }))
+        # Send updated status
+        await ws.send(json.dumps({
+            "type": "status_response",
+            "sessions": all_sessions_summary(),
+            "pending_commands": len(pending_commands),
+        }))
+        log.info(f"  <- CLEAR DEAD from {_peer_ip(ws)}  (removed {count})")
         return
 
     log.warning(f"  unknown message type from phone: {msg_type}")
@@ -356,12 +470,20 @@ async def detect_tailscale() -> str | None:
     return None
 
 
-async def main(enable_telegram: bool = False) -> None:
+async def main(enable_telegram: bool = False, enable_webapp: bool = False) -> None:
     hook_server = await asyncio.start_server(handle_hook, "127.0.0.1", HOOK_PORT)
     log.info(f"Hook listener ........ tcp://127.0.0.1:{HOOK_PORT}")
 
     ws_server = await serve(handle_phone, "0.0.0.0", WS_PORT)
     log.info(f"Phone WebSocket ...... ws://0.0.0.0:{WS_PORT}")
+
+    webapp_runner = None
+    if enable_webapp:
+        try:
+            from laptop.server.webapp_server import start_webapp_server
+            webapp_runner = await start_webapp_server()
+        except ImportError:
+            log.warning("Webapp: aiohttp not installed. Run: pip install aiohttp")
 
     telegram_bridge = None
     if enable_telegram:
@@ -382,8 +504,12 @@ async def main(enable_telegram: bool = False) -> None:
     if ts_ip:
         log.info(f"Tailscale IP ......... {ts_ip}")
         log.info(f"Phone connects to ... ws://{ts_ip}:{WS_PORT}")
+        if webapp_runner:
+            log.info(f"Webapp URL ........... http://{ts_ip}:8767")
     else:
         log.warning("Tailscale not detected -- phone connections limited to local network")
+        if webapp_runner:
+            log.info(f"Webapp URL ........... http://localhost:8767")
 
     asyncio.create_task(_prune_loop())
 
@@ -398,6 +524,8 @@ async def main(enable_telegram: bool = False) -> None:
     finally:
         if telegram_bridge:
             await telegram_bridge.stop()
+        if webapp_runner:
+            await webapp_runner.cleanup()
         ws_server.close()
         await ws_server.wait_closed()
         hook_server.close()
@@ -407,7 +535,8 @@ async def main(enable_telegram: bool = False) -> None:
 
 if __name__ == "__main__":
     enable_tg = "--telegram" in sys.argv
+    enable_wa = "--webapp" in sys.argv
     try:
-        asyncio.run(main(enable_telegram=enable_tg))
+        asyncio.run(main(enable_telegram=enable_tg, enable_webapp=enable_wa))
     except KeyboardInterrupt:
         log.info("\nShutting down...")
