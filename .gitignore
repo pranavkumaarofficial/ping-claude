@@ -32,6 +32,7 @@ laptop/hooks/hook_debug.log
 # Research artifacts (not part of the tool)
 ntfy_search.json
 research.py
+research*.md
 
 # Android (for later)
 android/.gradle/
