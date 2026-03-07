@@ -471,7 +471,6 @@ async def detect_tailscale() -> str | None:
 
 
 async def main(enable_telegram: bool = False, enable_webapp: bool = False) -> None:
-async def main() -> None:
     hook_server = await asyncio.start_server(handle_hook, "127.0.0.1", HOOK_PORT)
     log.info(f"Hook listener ........ tcp://127.0.0.1:{HOOK_PORT}")
 
@@ -539,7 +538,5 @@ if __name__ == "__main__":
     enable_wa = "--webapp" in sys.argv
     try:
         asyncio.run(main(enable_telegram=enable_tg, enable_webapp=enable_wa))
-    try:
-        asyncio.run(main())
     except KeyboardInterrupt:
         log.info("\nShutting down...")

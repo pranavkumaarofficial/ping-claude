@@ -3,14 +3,10 @@
 Ping Claude CLI
 
 Commands:
-  ping-claude install                        -- merge hooks into ~/.claude/settings.json
-  ping-claude start [--telegram] [--webapp]  -- launch server (with optional integrations)
-  ping-claude status                         -- show server status
-  ping-claude telegram --token T             -- configure Telegram bot token
-  ping-claude voice --key K                  -- configure Groq API key for voice
-  ping-claude uninstall                      -- remove hooks from settings.json
   ping-claude install              -- merge hooks into ~/.claude/settings.json
-  ping-claude start                -- launch server
+  ping-claude start                -- launch server (webapp enabled by default)
+  ping-claude start --no-webapp    -- launch server without web UI
+  ping-claude start --telegram     -- include Telegram bot bridge
   ping-claude status               -- show server status
   ping-claude voice --key K        -- configure Groq API key for voice
   ping-claude uninstall            -- remove hooks from settings.json
@@ -279,15 +275,39 @@ def start() -> None:
     except Exception:
         pass
 
+    # Build webapp first
+    print("[*] Building React webapp...")
+    webapp_dir = Path(__file__).parent / "server" / "webapp"
+    if webapp_dir.exists():
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=str(webapp_dir),
+                capture_output=True,
+                timeout=60
+            )
+            if result.returncode == 0:
+                print("[OK] Webapp built successfully")
+            else:
+                print("[!] Webapp build failed, but continuing with server...")
+                if result.stderr:
+                    print(f"Error: {result.stderr.decode('utf-8', errors='ignore')[:200]}")
+        except FileNotFoundError:
+            print("[!] npm not found. Install Node.js or skip webapp with --no-webapp")
+        except subprocess.TimeoutExpired:
+            print("[!] Webapp build timed out. Skipping webapp.")
+    else:
+        print(f"[!] Webapp directory not found at {webapp_dir}")
+
     import asyncio
     from laptop.server.websocket_server import main as server_main
 
     enable_tg = "--telegram" in sys.argv
-    enable_wa = "--webapp" in sys.argv
+    enable_wa = not "--no-webapp" in sys.argv  # enabled by default
+    print(f"\n[*] Starting servers (webapp: {'enabled' if enable_wa else 'disabled'}, telegram: {'enabled' if enable_tg else 'disabled'})\n")
     try:
         asyncio.run(server_main(enable_telegram=enable_tg, enable_webapp=enable_wa))
-    try:
-        asyncio.run(server_main())
     except KeyboardInterrupt:
         print("\n\nServer stopped.")
 
