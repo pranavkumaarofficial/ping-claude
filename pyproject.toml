@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ping-claude"
 version = "1.0.0"
-description = "Control Claude Code from your phone via Telegram — notifications, approvals, voice commands, and real-time activity feed"
+description = "Control Claude Code remotely via Tailscale — notifications, approvals, voice commands, and real-time activity feed"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Pranav Kumaar"}
 ]
-keywords = ["claude", "claude-code", "telegram", "remote-control", "hooks", "ai", "voice", "notifications"]
+keywords = ["claude", "claude-code", "tailscale", "remote-control", "hooks", "ai", "voice", "notifications"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
