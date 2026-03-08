@@ -369,9 +369,10 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
         tmp.write(img_bytes)
         tmp.close()
         img_path = tmp.name.replace("\\", "/")
-        text = f"Here is an image I'm sharing: {img_path}"
         if caption:
-            text += f"\n{caption}"
+            text = f"{caption}\n\n(See attached image: {img_path})"
+        else:
+            text = f"Look at this image: {img_path}"
         cmd = {"text": text, "source": "phone_image",
                "session_id": sid, "timestamp": _now()}
         pending_commands.append(cmd)
@@ -404,7 +405,7 @@ async def handle_phone_message(data: dict, ws: ServerConnection) -> None:
     if msg_type == "clear_dead":
         count = prune_dead_sessions(force=True)
         await ws.send(json.dumps({
-            "type": "command_ack", "text": f"cleared {count} dead session(s)", "status": "ok",
+            "type": "command_ack", "text": f"cleared {count} dead session(s)", "status": "queued",
         }))
         # Send updated status
         await ws.send(json.dumps({

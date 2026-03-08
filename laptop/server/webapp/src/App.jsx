@@ -120,9 +120,13 @@ export default function App() {
       case 'status_response':
         if (data.sessions) setSessions(data.sessions.sessions || []);
         break;
-      case 'command_ack':
-        toast(data.status === 'queued' ? 'Sent' : (data.status || 'OK'));
+      case 'command_ack': {
+        const ackText = data.text || '';
+        if (ackText !== 'approve' && ackText !== 'deny') {
+          toast('Sent');
+        }
         break;
+      }
       case 'history_response':
         if (data.events) data.events.forEach(addEventMessages);
         break;
