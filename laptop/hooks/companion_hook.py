@@ -146,7 +146,7 @@ def handle_stop(hook: dict) -> None:
     last_msg = read_last_assistant_message(hook.get("transcript_path", ""))
     payload = build_payload(hook, "task_completed", last_msg)
     payload["request"] = "poll_command"
-    payload["command_filter"] = ["phone_voice", "phone_terminate"]
+    payload["command_filter"] = ["phone_voice", "phone_terminate", "phone_image"]
 
     resp = send_recv(payload)
     cmd = resp.get("command") if resp else None
@@ -161,7 +161,7 @@ def handle_stop(hook: dict) -> None:
     iterations = STOP_POLL_SECONDS // STOP_POLL_INTERVAL
     for _ in range(iterations):
         time.sleep(STOP_POLL_INTERVAL)
-        cmd = poll_command(sid, ["phone_voice", "phone_terminate"])
+        cmd = poll_command(sid, ["phone_voice", "phone_terminate", "phone_image"])
         if cmd:
             if cmd.get("source") == "phone_terminate":
                 _debug("TERMINATE received -- letting session end")
