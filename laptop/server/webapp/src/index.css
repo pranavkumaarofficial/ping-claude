@@ -208,6 +208,44 @@ html, body, #root {
 
 .session-end:hover { color: var(--red); }
 
+/* ── Tab bar ── */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  padding: 0 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  position: relative;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+
+.tab-btn:active {
+  opacity: 0.7;
+}
+
 /* ── Feed ── */
 .feed {
   flex: 1;

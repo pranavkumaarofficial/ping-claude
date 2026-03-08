@@ -23,6 +23,14 @@ export default function App() {
   const [queue, setQueue] = useState([]);
   const [recording, setRecording] = useState(false);
   const [pastedImage, setPastedImage] = useState(null);
+  const [activeTab, setActiveTab] = useState('active');
+  const [completedActions, setCompletedActions] = useState(() => {
+    try {
+      const stored = localStorage.getItem('pc-completed');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
+  const [messageTimestamps, setMessageTimestamps] = useState(new Map());
 
   const wsRef = useRef(null);
   const feedRef = useRef(null);
@@ -37,6 +45,22 @@ export default function App() {
 
   useEffect(() => {
     try { localStorage.setItem('pc-msgs', JSON.stringify(messages)); } catch {}
+  }, [messages]);
+
+  useEffect(() => {
+    try { localStorage.setItem('pc-completed', JSON.stringify([...completedActions])); } catch {}
+  }, [completedActions]);
+
+  useEffect(() => {
+    setCompletedActions(prev => {
+      const validIds = new Set();
+      messages.forEach(msg => {
+        if (prev.has(msg.id)) {
+          validIds.add(msg.id);
+        }
+      });
+      return validIds;
+    });
   }, [messages]);
 
   function toast(text) {
@@ -54,9 +78,56 @@ export default function App() {
     return false;
   }
 
+  function markCompleted(msgId) {
+    setCompletedActions(prev => new Set([...prev, msgId]));
+  }
+
+  function getActiveMessages(messages, target, completedActions, messageTimestamps) {
+    const sessionFiltered = target
+      ? messages.filter(m => !m.sid || m.sid === target || m.sid.startsWith(target) || target.startsWith(m.sid))
+      : messages;
+
+    let mostRecentClaudeId = null;
+    for (let i = sessionFiltered.length - 1; i >= 0; i--) {
+      if (sessionFiltered[i].kind === 'claude') {
+        mostRecentClaudeId = sessionFiltered[i].id;
+        break;
+      }
+    }
+
+    const userMsgs = sessionFiltered.filter(m => m.kind === 'user');
+    const recentUserIds = new Set(userMsgs.slice(-3).map(m => m.id));
+
+    return sessionFiltered.filter(msg => {
+      switch (msg.kind) {
+        case 'divider':
+          return true;
+        case 'permission':
+          return !completedActions.has(msg.id);
+        case 'question':
+          return !completedActions.has(msg.id);
+        case 'tool':
+          return msg.done === false;
+        case 'claude':
+          return msg.id === mostRecentClaudeId;
+        case 'user':
+          return recentUserIds.has(msg.id);
+        default:
+          return false;
+      }
+    });
+  }
+
+  function getHistoryMessages(messages, target) {
+    return target
+      ? messages.filter(m => !m.sid || m.sid === target || m.sid.startsWith(target) || target.startsWith(m.sid))
+      : messages;
+  }
+
   function addMsg(msg) {
     setMessages(prev => {
       const next = [...prev, { ...msg, id: ++_id }];
+      setMessageTimestamps(m => new Map(m).set(_id, Date.now()));
       return next.length > MAX_MSGS ? next.slice(-MAX_MSGS) : next;
     });
   }
@@ -334,16 +405,39 @@ export default function App() {
         </div>
       )}
 
+      <div className="tab-bar">
+        <button className={`tab-btn${activeTab === 'active' ? ' active' : ''}`} onClick={() => setActiveTab('active')}>Active</button>
+        <button className={`tab-btn${activeTab === 'history' ? ' active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
+      </div>
+
       <div className="feed" ref={feedRef}>
         {(() => {
-          const filtered = target ? messages.filter(m => !m.sid || m.sid === target || m.sid.startsWith(target) || target.startsWith(m.sid)) : messages;
-          if (filtered.length === 0) return (
-            <div className="empty">
-              <div className="empty-icon"><span className="spinner lg" /></div>
-              <div>{target ? 'No messages for this session' : 'Waiting for Claude Code...'}</div>
-            </div>
-          );
-          return filtered.map(msg => <MsgItem key={msg.id} msg={msg} wsSend={wsSend} setTarget={setTarget} />);
+          const filtered = activeTab === 'active'
+            ? getActiveMessages(messages, target, completedActions, messageTimestamps)
+            : getHistoryMessages(messages, target);
+
+          if (filtered.length === 0) {
+            const emptyMsg = activeTab === 'active'
+              ? 'All caught up! No pending actions.'
+              : (target ? 'No messages for this session' : 'Waiting for Claude Code...');
+            return (
+              <div className="empty">
+                <div className="empty-icon"><span className="spinner lg" /></div>
+                <div>{emptyMsg}</div>
+              </div>
+            );
+          }
+
+          return filtered.map(msg => (
+            <MsgItem
+              key={msg.id}
+              msg={msg}
+              wsSend={wsSend}
+              setTarget={setTarget}
+              onComplete={markCompleted}
+              isCompleted={completedActions.has(msg.id)}
+            />
+          ));
         })()}
       </div>
 
@@ -408,7 +502,7 @@ export default function App() {
 
 // ── Message Components ──
 
-function MsgItem({ msg, wsSend, setTarget }) {
+function MsgItem({ msg, wsSend, setTarget, onComplete, isCompleted }) {
   switch (msg.kind) {
     case 'divider':
       return <div className={`divider ${msg.color}`}>{msg.label}{msg.time ? ` · ${msg.time}` : ''}</div>;
@@ -421,10 +515,10 @@ function MsgItem({ msg, wsSend, setTarget }) {
       );
 
     case 'permission':
-      return <PermissionCard msg={msg} wsSend={wsSend} />;
+      return <PermissionCard msg={msg} wsSend={wsSend} onComplete={onComplete} isCompleted={isCompleted} />;
 
     case 'question':
-      return <QuestionCard msg={msg} wsSend={wsSend} />;
+      return <QuestionCard msg={msg} wsSend={wsSend} onComplete={onComplete} isCompleted={isCompleted} />;
 
     case 'tool':
       return (
@@ -451,9 +545,21 @@ function MsgItem({ msg, wsSend, setTarget }) {
   }
 }
 
-function PermissionCard({ msg, wsSend }) {
-  const [acted, setActed] = useState(null);
+function PermissionCard({ msg, wsSend, onComplete, isCompleted }) {
+  const [acted, setActed] = useState(isCompleted ? 'completed' : null);
   const [expanded, setExpanded] = useState(false);
+
+  function handleApprove() {
+    wsSend({ type: 'approve', session_id: msg.sid });
+    setActed('approved');
+    onComplete?.(msg.id);
+  }
+
+  function handleDeny() {
+    wsSend({ type: 'deny', session_id: msg.sid });
+    setActed('denied');
+    onComplete?.(msg.id);
+  }
 
   return (
     <div className="perm-card">
@@ -471,18 +577,18 @@ function PermissionCard({ msg, wsSend }) {
       )}
       {!acted && (
         <div className="perm-actions">
-          <button className="btn-approve" onClick={() => { wsSend({ type: 'approve', session_id: msg.sid }); setActed('approved'); }}>Approve</button>
-          <button className="btn-deny" onClick={() => { wsSend({ type: 'deny', session_id: msg.sid }); setActed('denied'); }}>Deny</button>
+          <button className="btn-approve" onClick={handleApprove}>Approve</button>
+          <button className="btn-deny" onClick={handleDeny}>Deny</button>
         </div>
       )}
     </div>
   );
 }
 
-function QuestionCard({ msg, wsSend }) {
+function QuestionCard({ msg, wsSend, onComplete, isCompleted }) {
   const [answers, setAnswers] = useState({});
   const [otherText, setOtherText] = useState({});
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState(isCompleted);
   const questions = msg.questions || [];
 
   function selectOption(qIdx, label, multi) {
@@ -500,6 +606,7 @@ function QuestionCard({ msg, wsSend }) {
   function submit() {
     wsSend({ type: 'approve', session_id: msg.sid });
     setSubmitted(true);
+    onComplete?.(msg.id);
   }
 
   const hasAnswer = questions.some((q, i) => {
