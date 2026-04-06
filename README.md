@@ -1,12 +1,17 @@
-# ping-claude — Remote Claude Code control
+# ping-claude —> Your local Claude Code terminal, on your phone
+
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
+![Offline](https://img.shields.io/badge/works-completely%20offline-brightgreen.svg)
+![Tailscale](https://img.shields.io/badge/secured%20by-Tailscale-blue.svg)
 
 Control Claude Code from your phone. Approve permissions, send commands, watch Claude work in real time, all through a secure Tailscale connection. No cloud relay, no third-party services. The server runs on your machine.
 
 ```
-Claude wants to run `rm -rf build/`  →  [Approve] [Deny] buttons on your phone
-You send a voice message             →  transcribed and sent to Claude as input
-Claude reads files, runs tests       →  live activity feed on your phone
-Claude finishes a task               →  send a follow-up command from anywhere
+Claude finishes a task on your laptop  →  notification on your phone, wherever you are
+Claude wants to run `rm -rf build/`   →  [Approve] [Deny] — no need to open your laptop
+You speak a follow-up command          →  transcribed, sent, Claude keeps working
+All of this over Tailscale — your machine, your network, zero cloud relay
 ```
 ## Demo
 
