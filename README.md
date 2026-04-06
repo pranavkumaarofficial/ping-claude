@@ -1,4 +1,4 @@
-# ping-claude —> Your local Claude Code terminal, on your phone
+# ping-claude — Your local Claude Code terminal, on your phone
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
