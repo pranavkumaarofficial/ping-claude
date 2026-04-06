@@ -8,6 +8,14 @@ You send a voice message             →  transcribed and sent to Claude as inpu
 Claude reads files, runs tests       →  live activity feed on your phone
 Claude finishes a task               →  send a follow-up command from anywhere
 ```
+## Demo
+
+https://github.com/user-attachments/assets/77fda315-b0c0-4f5d-989b-b1d733c9c4c3
+
+https://github.com/user-attachments/assets/85d70da9-c907-4f89-8e55-007d3683a88b
+
+
+
 
 ## Why this exists
 
