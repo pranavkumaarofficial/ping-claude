@@ -1,4 +1,4 @@
-# ping-claude
+# ping-claude — Remote Claude Code control
 
 Control Claude Code from your phone. Approve permissions, send commands, watch Claude work in real time, all through a secure Tailscale connection. No cloud relay, no third-party services. The server runs on your machine.
 
